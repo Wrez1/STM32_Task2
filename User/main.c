@@ -10,6 +10,7 @@
 #include "Serial.h"
 #include <stdlib.h>
 #include <string.h>
+#include <PWM.h>
 uint8_t KeyNum;
 
 // 双电机相关的全局变量
@@ -45,165 +46,75 @@ void Send_Data_To_PC(void);
 
 int main(void)
 {
-    // 模块初始化
-    OLED_Init();
-    Key_Init();
-    Motor_Init();
-    Encoder1_Init();
-	Encoder2_Init();
-    RP_Init();
     Serial_Init();
-    Timer_Init();
+    Motor_Init();
+	PWM_Init();
     
-    // PID参数初始化
-    Kp = 2.0f; Ki = 0.5f; Kd = 0.1f;    // 电机1
-    Kp2 = 2.0f; Ki2 = 0.5f; Kd2 = 0.1f;  // 电机2
-    Target = 0; Target2 = 0;
+    Serial_Printf("=== Motor and Hardware Test ===\r\n");
     
-    // 初始显示固定框架
-    OLED_Clear();
-    OLED_Printf(0, 0, OLED_8X16, "Speed Mode      ");
-    OLED_Printf(0, 16, OLED_8X16, "M1:     /      ");
-    OLED_Printf(0, 32, OLED_8X16, "M2:     /      ");
-    OLED_Printf(0, 48, OLED_8X16, "E1:       E2:   ");
-    OLED_Update();
+    // 手动设置所有引脚，绕过Motor_SetPWM函数
+    // 设置电机1方向为正转
+    GPIO_ResetBits(GPIOB, GPIO_Pin_12); // AIN1 = 0
+    GPIO_SetBits(GPIOB, GPIO_Pin_13);   // AIN2 = 1
     
-    Delay_ms(1000);
+    // 设置电机2方向为正转
+    GPIO_ResetBits(GPIOB, GPIO_Pin_14); // BIN1 = 0
+    GPIO_SetBits(GPIOB, GPIO_Pin_15);   // BIN2 = 1
     
-    uint16_t display_counter = 0;
+    Serial_Printf("Direction pins set for forward rotation.\r\n");
+    
+    // 设置PWM为50%
+    PWM_SetCompare1(50); // 给PA2 (电机1) 50%的PWM
+    PWM_SetCompare2(50); // 给PA3 (电机2) 50%的PWM
+    
+    Serial_Printf("PWM set to 50%% on both channels.\r\n");
+    Serial_Printf("Motor should be spinning NOW.\r\n");
     
     while (1)
     {
-        // 处理串口命令
-        if (UART_RxFlag) {
-            Process_UART_Command();
-            UART_RxFlag = 0;
-        }
-        
-        // 发送数据到VOFA+
-        Send_Data_To_PC();
-        
-        // OLED显示更新（100ms刷新一次，不闪烁）
-        display_counter++;
-        if (display_counter >= 10)  // 10 * 10ms = 100ms
-        {
-            display_counter = 0;
-            
-            // 只在数值变化时更新对应位置
-            if (Speed1 != last_Speed1) {
-                OLED_Printf(24, 16, OLED_8X16, "%+04d", Speed1);
-                last_Speed1 = Speed1;
-            }
-            
-            if ((int)Target != last_Target1) {
-                OLED_Printf(72, 16, OLED_8X16, "%+04d", (int)Target);
-                last_Target1 = (int)Target;
-            }
-            
-            if (Speed2 != last_Speed2) {
-                OLED_Printf(24, 32, OLED_8X16, "%+04d", Speed2);
-                last_Speed2 = Speed2;
-            }
-            
-            if ((int)Target2 != last_Target2) {
-                OLED_Printf(72, 32, OLED_8X16, "%+04d", (int)Target2);
-                last_Target2 = (int)Target2;
-            }
-            
-            if (Encoder1_Count != last_Encoder1) {
-                OLED_Printf(16, 48, OLED_8X16, "%+06ld", Encoder1_Count);
-                last_Encoder1 = Encoder1_Count;
-            }
-            
-            if (Encoder2_Count != last_Encoder2) {
-                OLED_Printf(72, 48, OLED_8X16, "%+06ld", Encoder2_Count);
-                last_Encoder2 = Encoder2_Count;
-            }
-            
-            OLED_Update();  // 只更新变化的部分
-        }
-        
-        Delay_ms(10);
+        // 每2秒打印一次状态
+        Serial_Printf("Status: Motors should be running...\r\n");
+        Delay_ms(2000);
     }
 }
 
-// 定时器中断服务函数（10ms执行一次）
+
+
+
+/*
 void TIM1_UP_IRQHandler(void)
 {
     if (TIM_GetITStatus(TIM1, TIM_IT_Update) == SET)
     {
+        // My_LED_Turn(); // 可以注释掉，避免干扰串口
+        
         static uint16_t Count;
         Count++;
         
-        Key_Tick();
-        
-        if (Count >= 1)    // 10ms执行一次PID控制
+        if (Count >= 1)    // 10ms执行一次
         {
             Count = 0;
             
-            // 读取编码器增量值
-            int16_t encoder1_delta = Encoder1_Get();
-            int16_t encoder2_delta = Encoder2_Get();
+            // 读取编码器值
+            Speed1 = (int16_t)TIM_GetCounter(TIM3);
+            Speed2 = (int16_t)TIM_GetCounter(TIM4);
             
-            // 更新累计计数和速度
-            Encoder1_Count += encoder1_delta;
-            Encoder2_Count += encoder2_delta;
-            Speed1 = encoder1_delta;  // 10ms内增量即为速度
-            Speed2 = encoder2_delta;
-            
-            // 电机1 PID控制（保持原有逻辑）
-            Actual += encoder1_delta;
-            Error2 = Error1;
-            Error1 = Error0;
-            Error0 = Target - Actual;
-            
-            // 增量式PID公式
-            Out += Kp * (Error0 - Error1) + Ki * Error0
-                   + Kd * (Error0 - 2 * Error1 + Error2);
-            
-            // 电机2 PID控制（速度环）
-            Error2_2 = Error2_1;
-            Error2_1 = Error2_0;
-            Error2_0 = Target2 - Speed2;
-            
-            // 增量式PID公式
-            Out2 += Kp2 * (Error2_0 - Error2_1) + Ki2 * Error2_0
-                    + Kd2 * (Error2_0 - 2 * Error2_1 + Error2_2);
-            
-            // 输出限幅
-            if (Out > 100) Out = 100;
-            if (Out < -100) Out = -100;
-            if (Out2 > 100) Out2 = 100;
-            if (Out2 < -100) Out2 = -100;
-            
-            // 控制电机
-            Motor_SetPWM(1, Out);
-            Motor_SetPWM(2, Out2);
+            // <--- 添加调试打印 ---
+            static uint16_t debug_counter = 0;
+            debug_counter++;
+            if (debug_counter >= 100) // 每1秒打印一次
+            {
+                debug_counter = 0;
+                Serial_Printf("Running! S1:%d S2:%d\r\n", Speed1, Speed2);
+            }
+            // --- 调试结束 ---
         }
         
         TIM_ClearITPendingBit(TIM1, TIM_IT_Update);
     }
 }
+*/
 
-// 串口接收中断
-void USART1_IRQHandler(void)
-{
-    if (USART_GetITStatus(USART1, USART_IT_RXNE) == SET)
-    {
-        uint8_t data = USART_ReceiveData(USART1);
-        
-        if (data == '\r' || data == '\n') {
-            if (UART_RxIndex > 0) {
-                UART_RxBuffer[UART_RxIndex] = '\0';
-                UART_RxFlag = 1;  // 接收完成标志
-            }
-        } else if (UART_RxIndex < sizeof(UART_RxBuffer) - 1) {
-            UART_RxBuffer[UART_RxIndex++] = data;
-        }
-        
-        USART_ClearITPendingBit(USART1, USART_IT_RXNE);
-    }
-}
 
 // 处理串口命令 @speedXX%
 void Process_UART_Command(void)
