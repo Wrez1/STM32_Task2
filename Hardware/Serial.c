@@ -7,57 +7,59 @@ uint8_t Serial_RxFlag;		//定义串口接收的标志位变量
 
 /**
  * 函数名：Serial_Init
- * 功  能：串口初始化，波特率115200
+ * 功  能：初始化USART1串口（标准配置），波特率115200，使用固定引脚PA9(TX)/PA10(RX)
  * 用  途：与上位机通信，接收命令和发送数据
- * 硬件：PA9(TX), PA10(RX)
+ * 硬件要求：PA9接外部设备RX，PA10接外部设备TX（必须交叉连接！）
+ * 注意事项：STM32F103系列USART1引脚不可重映射，此为硬件固定配置
  */
 void Serial_Init(void)
 {
-    /*开启时钟*/
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE);    // 开启USART1时钟
-    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);     // 开启GPIOA时钟
+    /* 1. 开启外设时钟（先开GPIO再开USART）*/
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA, ENABLE);  // 必须先开GPIO时钟（引脚配置依赖）
+    RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE); // 再开USART1时钟
     
-    /*GPIO初始化*/
-    GPIO_InitTypeDef GPIO_InitStructure;
+    /* 2. GPIO引脚配置（严格遵循硬件映射）*/
+    GPIO_InitTypeDef GPIO_InitStruct;
     
-    /*USART1_TX (PA9) 配置*/
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF_PP;    // 复用推挽输出
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9;          // PA9
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
+    // PA9: USART1_TX → 复用推挽输出（必须50MHz高速）
+    GPIO_InitStruct.GPIO_Pin = GPIO_Pin_9;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_AF_PP;  // 复用推挽
+    GPIO_InitStruct.GPIO_Speed = GPIO_Speed_50MHz; // 高速确保波形质量
+    GPIO_Init(GPIOA, &GPIO_InitStruct);
     
-    /*USART1_RX (PA10) 配置*/
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;      // 上拉输入
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_10;         // PA10
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
+    // PA10: USART1_RX → 上拉输入（必须上拉！）
+    GPIO_InitStruct.GPIO_Pin = GPIO_Pin_10;
+    GPIO_InitStruct.GPIO_Mode = GPIO_Mode_IN_FLOATING; // 浮空输入（更符合UART协议）
+    // 替代方案：若环境干扰大，用GPIO_Mode_IPU（上拉输入）
+    GPIO_Init(GPIOA, &GPIO_InitStruct);
     
-    /*USART1初始化*/
-    USART_InitTypeDef USART_InitStructure;
-    USART_InitStructure.USART_BaudRate = 115200;                    // 波特率115200（提高传输速度）
-    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None; // 无硬件流控
-    USART_InitStructure.USART_Mode = USART_Mode_Tx | USART_Mode_Rx; // 收发模式
-    USART_InitStructure.USART_Parity = USART_Parity_No;           // 无奇偶校验
-    USART_InitStructure.USART_StopBits = USART_StopBits_1;         // 1位停止位
-    USART_InitStructure.USART_WordLength = USART_WordLength_8b;    // 8位数据位
-    USART_Init(USART1, &USART_InitStructure);
+    /* 3. USART核心配置 */
+    USART_InitTypeDef USART_InitStruct;
+    USART_InitStruct.USART_BaudRate = 115200;             // 高速波特率
+    USART_InitStruct.USART_WordLength = USART_WordLength_8b; // 8位数据
+    USART_InitStruct.USART_StopBits = USART_StopBits_1;   // 1位停止位
+    USART_InitStruct.USART_Parity = USART_Parity_No;      // 无校验
+    USART_InitStruct.USART_HardwareFlowControl = USART_HardwareFlowControl_None; // 无流控
+    USART_InitStruct.USART_Mode = USART_Mode_Tx | USART_Mode_Rx; // 全双工
+    USART_Init(USART1, &USART_InitStruct);
     
-    /*中断输出配置*/
-    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);    // 开启串口接收数据的中断
+    /* 4. 中断配置（可选，根据需求启用）*/
+    USART_ITConfig(USART1, USART_IT_RXNE, ENABLE); // 使能接收中断
     
-    /*NVIC中断分组*/
-    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);    // 配置NVIC为分组2
+    /* 5. NVIC配置（中断优先级）*/
+    NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2); // 2位抢占+2位子优先级
     
-    /*NVIC配置*/
-    NVIC_InitTypeDef NVIC_InitStructure;
-    NVIC_InitStructure.NVIC_IRQChannel = USART1_IRQn;      // 选择配置NVIC的USART1线
-    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;         // 指定NVIC线路使能
-    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 2; // 抢占优先级为2
-    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 2;      // 响应优先级为2
-    NVIC_Init(&NVIC_InitStructure);
+    NVIC_InitTypeDef NVIC_InitStruct;
+    NVIC_InitStruct.NVIC_IRQChannel = USART1_IRQn;       // USART1中断通道
+    NVIC_InitStruct.NVIC_IRQChannelPreemptionPriority = 2; // 抢占优先级2
+    NVIC_InitStruct.NVIC_IRQChannelSubPriority = 2;      // 子优先级2
+    NVIC_InitStruct.NVIC_IRQChannelCmd = ENABLE;         // 使能通道
+    NVIC_Init(&NVIC_InitStruct);
     
-    /*USART使能*/
-    USART_Cmd(USART1, ENABLE);    // 使能USART1，串口开始运行
+    /* 6. 最终使能 */
+    USART_Cmd(USART1, ENABLE); // 必须最后使能！
 }
+
 
 
 /**
@@ -181,24 +183,3 @@ uint8_t Serial_GetRxData(void)
 {
 	return Serial_RxData;			//返回接收的数据变量
 }
-
-/**
-  * 函    数：USART1中断函数
-  * 参    数：无
-  * 返 回 值：无
-  * 注意事项：此函数为中断函数，无需调用，中断触发后自动执行
-  *           函数名为预留的指定名称，可以从启动文件复制
-  *           请确保函数名正确，不能有任何差异，否则中断函数将不能进入
-  */
-/*void USART1_IRQHandler(void)
-{
-	if (USART_GetITStatus(USART1, USART_IT_RXNE) == SET)		//判断是否是USART1的接收事件触发的中断
-	{
-		Serial_RxData = USART_ReceiveData(USART1);				//读取数据寄存器，存放在接收的数据变量
-		Serial_RxFlag = 1;										//置接收标志位变量为1
-		USART_ClearITPendingBit(USART1, USART_IT_RXNE);			//清除USART1的RXNE标志位
-																//读取数据寄存器会自动清除此标志位
-																//如果已经读取了数据寄存器，也可以不执行此代码
-	}
-}
-*/
